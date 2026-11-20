@@ -8,7 +8,7 @@
 
 两种方式，选一种：
 
-1. **发行版 zip**：下载 [meme-0.2.1.zip](https://github.com/FelixTaXk/whalelife-community-meme/releases/download/v0.2.1/meme-0.2.1.zip)，解压后把里面的 `meme/` 整个目录放进 WhaleLife 的 `plugins/`。
+1. **发行包**：[meme-0.2.1-win32-x64.wlpkg.gz](https://github.com/FelixTaXk/whalelife-community-meme/releases/download/v0.2.1/meme-0.2.1-win32-x64.wlpkg.gz) 是 `.wlpkg.gz` 官方发行包格式（一行 `{"format":1,"files":[...]}` 清单 + 按清单顺序拼接的文件字节，gzip 封装），由宿主商店/校验链路安装；手动安装见下一条。
 2. **git clone**：`git clone https://github.com/FelixTaXk/whalelife-community-meme plugins/meme`。
 
 放好后重启本体。需要图库插件 0.1.2 及以上（`depends: [gallery]`），渲染还需要 Python + Pillow：解释器默认按 PATH 找带 Pillow 的 `python` / `python3`，找不到就到插件设置页填 python.exe 的完整路径。
