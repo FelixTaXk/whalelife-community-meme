@@ -1,5 +1,5 @@
 /*! 表情包工坊：字幕/气泡/描边 + 自动入库（meme 用途）。 */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,12 +54,24 @@ function defaultWidth(cfg: any) {
   return Number.isFinite(n) ? Math.min(1600, Math.max(256, Math.round(n))) : DEFAULT_WIDTH;
 }
 
+let chosenPython: string | null = null;
+function hasPillow(cmd: string) {
+  try {
+    const probe = spawnSync(cmd, ['-c', 'import PIL'], { windowsHide: true, timeout: 20000 });
+    return probe.status === 0;
+  } catch {
+    return false;
+  }
+}
+// 不再内置任何开发机路径：先用设置里填的，再按 PATH 找带 Pillow 的 python
 function pythonPath() {
+  if (chosenPython) return chosenPython;
   const cfg = config();
-  const chosen = String(cfg.python || '');
-  if (chosen && existsSync(chosen)) return chosen;
-  const comfy = 'D:\\ComfyUI\\venv\\Scripts\\python.exe';
-  if (existsSync(comfy)) return comfy;
+  const chosen = String(cfg.python || '').trim();
+  if (chosen && existsSync(chosen)) return (chosenPython = chosen);
+  for (const cmd of ['python', 'python3']) {
+    if (hasPillow(cmd)) return (chosenPython = cmd);
+  }
   return 'python';
 }
 
@@ -205,15 +217,21 @@ function runPython(input: string, output: string, text: string, style: string, w
     signal?.addEventListener('abort', abort, { once: true });
     child.stdout.on('data', (chunk) => { out += String(chunk); });
     child.stderr.on('data', (chunk) => { err += String(chunk); });
-    child.on('error', (error) => {
+    child.on('error', (error: any) => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
-      reject(error);
+      reject(Error(error?.code === 'ENOENT' ? '找不到 python：请在插件设置页填 python.exe 的完整路径（需要装 Pillow）' : error));
     });
     child.on('close', (code) => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
-      if (code !== 0 && !out.trim()) return reject(Error(err.trim() || 'Python 退出码 ' + code));
+      if (code !== 0 && !out.trim()) {
+        const text = err.trim();
+        if (/No module named 'PIL'/.test(text)) {
+          return reject(Error('这个 python 没装 Pillow，请在设置页换成装了 Pillow 的 python.exe'));
+        }
+        return reject(Error(text || 'Python 退出码 ' + code));
+      }
       try {
         const data = JSON.parse(out.trim());
         if (!data?.ok) return reject(Error(String(data?.error ?? err.trim() ?? '渲染失败')));
@@ -487,16 +505,16 @@ th{color:var(--muted);font-weight:500;width:130px}
       <input id="width2" type="number" min="256" max="1600" step="1" value="${defaultWidth(cfg)}">
     </label>
     <label>允许读取的本地目录（一行一个，留空只允许本体目录）
-      <textarea id="allowedDirs" rows="3" placeholder="D:\\ComfyUI\\output">${esc((Array.isArray(cfg.allowedDirs) ? cfg.allowedDirs : []).join('\n'))}</textarea>
+      <textarea id="allowedDirs" rows="3" placeholder="D:\\图片\\表情包素材">${esc((Array.isArray(cfg.allowedDirs) ? cfg.allowedDirs : []).join('\n'))}</textarea>
     </label>
   </div>
 </section>
 
 <section class="card">
   <h2>Python</h2>
-  <p class="hint">渲染用 Pillow。留空就用 <code>D:\\ComfyUI\\venv\\Scripts\\python.exe</code>，再找不到就回退到 PATH 里的 <code>python</code>。</p>
+  <p class="hint">渲染用 Pillow。留空就按 PATH 找带 Pillow 的 <code>python</code> / <code>python3</code>；都没装 Pillow 时请在下面填 python.exe 完整路径。</p>
   <label>python.exe 路径
-    <input id="python" type="text" placeholder="D:\\ComfyUI\\venv\\Scripts\\python.exe" value="${esc(cfg.python || '')}">
+    <input id="python" type="text" placeholder="留空自动探测" value="${esc(cfg.python || '')}">
   </label>
   <table style="margin-top:14px">
     <tr><th>实际使用</th><td><code>${esc(py)}</code> ${pyFound ? '<span class="ok">已找到</span>' : (py === 'python' ? '<span class="bad">用 PATH 里的 python，未验证</span>' : '<span class="bad">文件不存在</span>')}</td></tr>
@@ -1092,6 +1110,7 @@ export function apply(ctx: Context) {
         const raw = String(patch.python ?? '').trim();
         if (raw && !existsSync(raw)) throw Error('这个 python 路径不存在：' + raw);
         next.python = raw;
+        chosenPython = null;
       }
       if (patch?.defaultStyle !== undefined) {
         if (!STYLES.includes(String(patch.defaultStyle))) throw Error('样式只能是 band / bubble / plain / top');

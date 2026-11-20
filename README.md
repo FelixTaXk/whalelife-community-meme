@@ -56,7 +56,7 @@ draw/selfie → galleryId（资产 id）
 
 ## 依赖
 
-- Python + Pillow：默认用 `D:\ComfyUI\venv\Scripts\python.exe`（本机已装 Pillow 13）
+- Python + Pillow：留空就先按 PATH 找带 Pillow 的 `python` / `python3`，找不到会提示你填完整路径
 - 字体：`C:\Windows\Fonts\msyhbd.ttc` → `msyh.ttc` → `simhei.ttf`，都没有就退到默认字体
 - 图库插件（必需）：`depends: [gallery]`，用它的 `readMedia` 取图、`offerMedia` 交付成品
 - 画室 `studio` 服务（可选）：只有「AI 画参考图」用得到，`optionalDepends: [studio]`，没有就禁用这一条入口
@@ -69,7 +69,7 @@ draw/selfie → galleryId（资产 id）
 - **一键出图**：上传 / 图库 / AI 画参考图 + 字幕 → 成品预览、下载
 - **默认样式 / 默认宽度**：`meme_make` / `meme_set` 和设置页一键出图没传 `style` / `width` 时用
 - **允许读取的本地目录**：一行一个绝对路径，留空就只允许本体目录；保存时校验目录必须存在
-- **python.exe 路径**：留空走 `D:\ComfyUI\venv\Scripts\python.exe`，再退回 PATH；保存时会检查文件是否存在
+- **python.exe 路径**：留空自动探测 PATH 里带 Pillow 的 python；保存时会检查文件是否存在
 - **输出统计**：当前 `data/out` 里的张数和占用（不含 `meme-src-*` 参考图）
 - **清空输出目录**：删 `meme-*` 的成品、参考图和临时输入，已经进图库、已经发出去的不受影响
 - **图库 / 画室状态**：显示两个可选服务是否接通
@@ -81,7 +81,7 @@ draw/selfie → galleryId（资产 id）
   "python": "",
   "defaultStyle": "band",
   "defaultWidth": 512,
-  "allowedDirs": ["D:\\ComfyUI\\output"]
+  "allowedDirs": ["D:\\图片\\表情包素材"]
 }
 ```
 
