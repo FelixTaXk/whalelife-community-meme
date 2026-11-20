@@ -1,0 +1,7 @@
+id: meme
+name: 表情包工坊
+version: 0.2.0
+description: 给图片加字幕、气泡或描边做成表情包；设置页可上传图片、取图库或让画室画一张参考图后一键出图，成品自动进图库并标成 meme，可直接用 QQ 发出去
+apiVersion: "1.0.0"
+optionalDepends: [gallery, studio]
+repository: https://github.com/FelixTaXk/whalelife-community-meme
