@@ -4,6 +4,15 @@
 
 思路来自鱼仔 `tools/make_meme_*.py`（PIL 加字幕 + 成套导出），改成插件里可反复调用的小工具。
 
+## 安装
+
+两种方式，选一种：
+
+1. **发行版 zip**：下载 [meme-0.2.1.zip](https://github.com/FelixTaXk/whalelife-community-meme/releases/download/v0.2.1/meme-0.2.1.zip)，解压后把里面的 `meme/` 整个目录放进 WhaleLife 的 `plugins/`。
+2. **git clone**：`git clone https://github.com/FelixTaXk/whalelife-community-meme plugins/meme`。
+
+放好后重启本体。需要图库插件 0.1.2 及以上（`depends: [gallery]`），渲染还需要 Python + Pillow：解释器默认按 PATH 找带 Pillow 的 `python` / `python3`，找不到就到插件设置页填 python.exe 的完整路径。
+
 ## 工具
 
 | 工具 | 作用 |
