@@ -10,11 +10,8 @@ const OUT_DIR = join(DIR, 'data', 'out');
 const TMP_DIR = join(DIR, 'data', 'tmp');
 const SCRIPT = join(DIR, 'tools', 'render_meme.py');
 
-const ALLOW_ROOTS = [
-  'D:\\AI\\whalelife',
-  'D:\\ComfyUI\\output',
-  'D:\\dafeiyu\\draws',
-].map((p) => resolve(p));
+// 只信任当前实例的本体目录，以及用户在设置里明确添加的目录；不再内置任何开发机路径
+const HOST_ROOT = resolve(DIR, '..', '..');
 
 const STYLES = ['band', 'bubble', 'plain', 'top'];
 const PAGE = '/plugins/meme/settings';
@@ -66,10 +63,24 @@ function pythonPath() {
   return 'python';
 }
 
+function allowedRoots(): string[] {
+  const roots = [resolve(HOST_ROOT), resolve(OUT_DIR)];
+  const cfg = config();
+  const extra = Array.isArray(cfg.allowedDirs) ? cfg.allowedDirs : [];
+  for (const item of extra) {
+    const raw = String(item ?? '').trim();
+    if (!raw || !isAbsolute(raw)) continue;
+    const full = resolve(raw);
+    if (!roots.includes(full)) roots.push(full);
+  }
+  return roots;
+}
+
 function allowedPath(raw: string) {
+  if (!raw || !isAbsolute(raw)) return null;
   const full = resolve(raw);
-  if (!isAbsolute(full)) return null;
-  return ALLOW_ROOTS.some((root) => full.startsWith(root + sep)) ? full : null;
+  const roots = allowedRoots();
+  return roots.some((root) => full === root || full.startsWith(root + sep)) ? full : null;
 }
 
 function esc(text: any) {
@@ -215,10 +226,11 @@ function runPython(input: string, output: string, text: string, style: string, w
   });
 }
 
-const SEND_HINT = (id: string) =>
-  '想发出去就用 qq_send_gallery：先 qq_list_recipients 确认收件人，' +
-  'parts 里放 {"type":"image","id":"' + id + '"}，要配字再加一条 {"type":"text","text":"…"}；' +
-  'actionId 每次自己起一个稳定的。图库 id 只能用这一次这句，不要改 ID 重发。';
+const SEND_HINT = (ref: string) =>
+  '成品已作为临时引用交在图库（mediaRef=' + ref + '，24 小时内有效、只属于当前会话）。' +
+  '要真正收进图库就调 gallery_collect，把这个 mediaRef 原样传进去并带 purposes=["meme"]；' +
+  '收藏成功后拿返回的 asset id，再用 qq_send_gallery 的 {"type":"image","id":"<asset id>"} 发出去，' +
+  'actionId 每次自己起一个稳定的。mediaRef 不是图库资产 id，别直接塞给发送接口。';
 
 /** 渲染一份字幕：输入已经是图片字节，来源怎么来的在这里不关心。 */
 async function renderBytes(ctx: any, args: any, session: any, index: number, bytes: Buffer) {
@@ -239,21 +251,28 @@ async function renderBytes(ctx: any, args: any, session: any, index: number, byt
   try {
     const result = await runPython(input, output, text, style, width, session.signal);
     const rendered = readFileSync(output);
-    let galleryId: string | null = null;
-    if (gallery?.ingest) {
-      const description = String(args?.description ?? '').trim() || text;
-      const asset = await gallery.ingest(
-        {
-          base64: rendered.toString('base64'),
-          name: 'meme-' + stamp + '.png',
-          description: description.slice(0, 500),
-          tags: ['表情包', 'meme'],
-          purposes: ['meme'],
-          source: 'meme',
-        },
-        { signal: session.signal },
-      );
-      galleryId = asset?.id ?? null;
+    // 走图库公开的 offerMedia：只交临时引用（24 小时内、绑定当前会话），入库由 gallery_collect 决定
+    let mediaRef: string | null = null;
+    let mediaRefExpiresInSeconds: number | null = null;
+    let galleryNote = '';
+    const sessionId = String(session?.id ?? session?.sessionId ?? '').trim();
+    if (!gallery?.offerMedia) {
+      galleryNote = '图库没有提供 offerMedia 接口（需要图库 0.1.2 及以上），成品只落本地文件';
+    } else if (!sessionId) {
+      galleryNote = '这次出图没有会话上下文，图库收不了临时引用；成品只在本地，用工具出图才会交给图库';
+    } else {
+      try {
+        const offered = await gallery.offerMedia(
+          { sessionId, base64: rendered.toString('base64'), source: 'meme' },
+          { signal: session.signal },
+        );
+        mediaRef = String(offered?.mediaRef ?? '').trim() || null;
+        const ttl = Number(offered?.expiresInSeconds);
+        mediaRefExpiresInSeconds = Number.isFinite(ttl) ? ttl : null;
+        if (!mediaRef) galleryNote = '图库返回里没有 mediaRef，成品只落本地文件';
+      } catch (error: any) {
+        galleryNote = '图库拒绝接收这张成品：' + String(error?.message ?? error).slice(0, 200);
+      }
     }
     return {
       style: result.style,
@@ -262,8 +281,9 @@ async function renderBytes(ctx: any, args: any, session: any, index: number, byt
       url: PAGE_OUT + '?name=' + encodeURIComponent(basename(output)),
       width: result.width,
       height: result.height,
-      galleryId,
-      imageUrl: galleryId ? '/plugins/gallery/image?id=' + galleryId : null,
+      mediaRef,
+      mediaRefExpiresInSeconds,
+      galleryNote,
     };
   } finally {
     try { unlinkSync(input); } catch { /* ignore */ }
@@ -280,7 +300,7 @@ async function renderOne(ctx: any, args: any, session: any, index: number) {
     bytes = Buffer.from(media.base64, 'base64');
   } else if (args?.sourcePath) {
     const full = allowedPath(String(args.sourcePath));
-    if (!full) throw Error('sourcePath 只能指向 whalelife / ComfyUI 输出目录里的图；更推荐传图库 sourceId');
+    if (!full) throw Error('sourcePath 只能指向本体目录或设置里允许的目录；更推荐传图库 sourceId');
     bytes = readFileSync(full);
   } else {
     throw Error('要给图：sourceId（图库 id）或 sourcePath（本地路径）');
@@ -444,7 +464,7 @@ th{color:var(--muted);font-weight:500;width:130px}
         <tr><th>成品</th><td id="resultName">—</td></tr>
         <tr><th>尺寸</th><td id="resultSize">—</td></tr>
         <tr><th>样式</th><td id="resultStyle">—</td></tr>
-        <tr><th>图库 ID</th><td id="resultId">—</td></tr>
+        <tr><th>图库引用</th><td id="resultId">—</td></tr>
       </table>
       <div class="row"><a class="btn" id="download" download>下载这张</a></div>
     </div>
@@ -466,6 +486,9 @@ th{color:var(--muted);font-weight:500;width:130px}
     <label>默认宽度（256–1600）
       <input id="width2" type="number" min="256" max="1600" step="1" value="${defaultWidth(cfg)}">
     </label>
+    <label>允许读取的本地目录（一行一个，留空只允许本体目录）
+      <textarea id="allowedDirs" rows="3" placeholder="D:\\ComfyUI\\output">${esc((Array.isArray(cfg.allowedDirs) ? cfg.allowedDirs : []).join('\n'))}</textarea>
+    </label>
   </div>
 </section>
 
@@ -486,7 +509,7 @@ th{color:var(--muted);font-weight:500;width:130px}
   <table>
     <tr><th>目录</th><td><code>${esc(OUT_DIR)}</code></td></tr>
     <tr><th>文件</th><td>${stat.count} 张 · ${(stat.bytes / 1048576).toFixed(2)} MB</td></tr>
-    <tr><th>入库</th><td>${galleryReady ? '每张自动进图库，标 purposes=meme' : '图库插件没在跑，只落本地文件'}</td></tr>
+    <tr><th>入库</th><td>${galleryReady ? '成品只交图库临时引用（mediaRef，24 小时），入库由 gallery_collect 完成' : '图库插件没在跑，只落本地文件'}</td></tr>
   </table>
   <div class="row"><button class="danger" id="clear">清空输出目录</button></div>
 </section>
@@ -674,7 +697,7 @@ function showResult(data) {
   $('#resultName').textContent = data.name;
   $('#resultSize').textContent = data.width + '×' + data.height;
   $('#resultStyle').textContent = data.style;
-  $('#resultId').textContent = data.galleryId || '（图库没接通，只落了本地文件）';
+  $('#resultId').textContent = data.mediaRef ? (data.mediaRef + '（24 小时内有效）') : (data.galleryNote || '图库没接收，成品只落了本地文件');
   $('#download').href = data.url + '&download=1';
 }
 $('#make').onclick = async () => {
@@ -695,7 +718,7 @@ $('#make').onclick = async () => {
       width: Number($('#width').value),
     });
     showResult(data);
-    ocMsg('出好了' + (data.galleryId ? '，已进图库' : ''));
+    ocMsg('出好了' + (data.mediaRef ? '，已交图库作临时引用' : ''));
   } catch (error) {
     ocMsg('出图失败：' + error.message, true);
   } finally {
@@ -708,7 +731,7 @@ checkModel();
 
 $('#save').onclick = async () => {
   try {
-    const body = { python: $('#python').value.trim(), defaultStyle: $('#style2').value, defaultWidth: Number($('#width2').value) };
+    const body = { python: $('#python').value.trim(), defaultStyle: $('#style2').value, defaultWidth: Number($('#width2').value), allowedDirs: $('#allowedDirs').value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean) };
     await post('${API_CONFIG}', body);
     msg('已保存');
   } catch (e) { msg('保存失败：' + e.message, true); }
@@ -855,7 +878,8 @@ export function apply(ctx: Context) {
     description:
       '把一张图做成表情包：加底部字幕（band）、白气泡（bubble）、描边大字（plain）或顶部字幕（top）。' +
       '图可以从图库拿（sourceId，画室刚出的图返回值里就有）或给本地路径（sourcePath）。' +
-      '做完自动进图库并标成 meme，返回 galleryId；要发出去就按 sendHint 调 qq_send_gallery。' +
+      '做完会把成品作为临时引用交给图库并返回 mediaRef（24 小时内、只属于当前会话）；' +
+      '要入库就调 gallery_collect（mediaRef 原样传，purposes=["meme"]），收藏拿到 asset id 后再用 qq_send_gallery 发送。' +
       '字幕一条一句话、口语化，七八个字以内（"就这？""困成鱼干"），别在一张图里塞好几处字，越小越糊。' +
       '如果图里也要出现中文（招牌、贴纸上的字），先在 draw 的 prompt 里用中文引号写出来，' +
       '并说明"字很大、占画面宽度一半"，一句七八个字以内；字体排版要卡死的表情包靠这层字幕压字，' +
@@ -864,8 +888,8 @@ export function apply(ctx: Context) {
     schema: {
       type: 'object',
       properties: {
-        sourceId: { type: 'string', description: '图库图片 id（画室出图返回的 galleryId）' },
-        sourcePath: { type: 'string', description: '本地图片路径；只接受 whalelife / ComfyUI 输出目录' },
+        sourceId: { type: 'string', description: '图库资产 id（画室出图返回的 galleryId）' },
+        sourcePath: { type: 'string', description: '本地图片路径；只接受本体目录或用户在设置里允许的目录' },
         text: { type: 'string', minLength: 1, description: '表情包字幕，最多 120 字' },
         style: { type: 'string', enum: STYLES, description: '默认 band' },
         width: { type: 'integer', description: '成品宽度，默认 512，范围 256–1600' },
@@ -878,13 +902,14 @@ export function apply(ctx: Context) {
       const one = await renderOne(ctx, args, session, 1);
       return {
         status: 'ok',
-        galleryId: one.galleryId,
-        imageUrl: one.imageUrl,
+        mediaRef: one.mediaRef,
+        mediaRefExpiresInSeconds: one.mediaRefExpiresInSeconds,
+        galleryNote: one.galleryNote,
         file: one.file,
         url: one.url,
         size: one.width + 'x' + one.height,
         style: one.style,
-        sendHint: one.galleryId ? SEND_HINT(one.galleryId) : '图库没在跑，只能给本地文件路径。',
+        sendHint: one.mediaRef ? SEND_HINT(one.mediaRef) : one.galleryNote || '成品只在本地，没有可发给图库的引用。',
       };
     },
   });
@@ -892,7 +917,7 @@ export function apply(ctx: Context) {
   ctx.tools.register({
     name: 'meme_set',
     description:
-      '同一张原图做一整套表情包：给一组字幕，每条出一张，全部进图库（meme）。' +
+      '同一张原图做一整套表情包：给一组字幕，每条出一张，全部交给图库作临时引用（mediaRef，24 小时有效）。' +
       '适合 "给她做一套表情包" —— 字幕按情绪排：开心、生气、困、无语、干饭。最多 8 条。' +
       '每条一句话、七八个字以内，别塞长句；图里要带中文的规则和 meme_make 一样：字写进 draw 的 prompt 并用中文引号括住、说明大小，精确排版靠字幕层压字。',
     danger: 'ask',
@@ -900,7 +925,7 @@ export function apply(ctx: Context) {
       type: 'object',
       properties: {
         sourceId: { type: 'string', description: '图库图片 id' },
-        sourcePath: { type: 'string', description: '本地图片路径（限 whalelife / ComfyUI 输出）' },
+        sourcePath: { type: 'string', description: '本地图片路径（限本体目录或设置里允许的目录）' },
         texts: {
           type: 'array',
           items: { type: 'string', minLength: 1 },
@@ -927,19 +952,19 @@ export function apply(ctx: Context) {
             session,
             i + 1,
           );
-          items.push({ text: texts[i], galleryId: one.galleryId, imageUrl: one.imageUrl, url: one.url, file: one.file });
+          items.push({ text: texts[i], mediaRef: one.mediaRef, galleryNote: one.galleryNote, url: one.url, file: one.file });
         } catch (error: any) {
           errors.push({ text: texts[i], error: error?.message ?? String(error) });
         }
       }
-      const first = items.find((x) => x.galleryId);
+      const first = items.find((x) => x.mediaRef);
       return {
         status: items.length ? 'ok' : 'error',
         count: items.length,
         failed: errors.length,
         items,
         errors,
-        sendHint: first?.galleryId ? SEND_HINT(first.galleryId) : '图库没在跑，只能给本地文件路径。',
+        sendHint: first?.mediaRef ? SEND_HINT(first.mediaRef) : (items[0]?.galleryNote || '成品只在本地，没有可发给图库的引用。'),
       };
     },
   });
@@ -1052,7 +1077,7 @@ export function apply(ctx: Context) {
       sendJson(res, 200, {
         ok: true,
         ...one,
-        sendHint: one.galleryId ? SEND_HINT(one.galleryId) : '图库没在跑，只能给本地文件路径。',
+        sendHint: one.mediaRef ? SEND_HINT(one.mediaRef) : (one.galleryNote || '成品只在本地，没有可发给图库的引用。'),
       });
     } catch (error: any) {
       sendJson(res, 400, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
@@ -1076,6 +1101,19 @@ export function apply(ctx: Context) {
         const n = Number(patch.defaultWidth);
         if (!Number.isFinite(n) || n < 256 || n > 1600) throw Error('默认宽度要在 256–1600 之间');
         next.defaultWidth = Math.round(n);
+      }
+      if (patch?.allowedDirs !== undefined) {
+        const list = (Array.isArray(patch.allowedDirs) ? patch.allowedDirs : String(patch.allowedDirs ?? '').split(/\r?\n/))
+          .map((x: any) => String(x ?? '').trim())
+          .filter(Boolean);
+        const checked: string[] = [];
+        for (const raw of list) {
+          if (!isAbsolute(raw)) throw Error('要填绝对路径：' + raw);
+          if (!existsSync(raw) || !statSync(raw).isDirectory()) throw Error('目录不存在：' + raw);
+          const full = resolve(raw);
+          if (!checked.includes(full)) checked.push(full);
+        }
+        next.allowedDirs = checked;
       }
       await ctx.config.save('config.json', next);
       sendJson(res, 200, { ok: true, config: next, out: outStats() });
